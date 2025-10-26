@@ -4,11 +4,30 @@ plugins {
     id("io.ktor.plugin") version "2.3.12"
 }
 
+repositories {
+    mavenCentral()
+}
+
 application {
+
     mainClass.set("com.interpill.gateway.ApplicationKt")
 }
 
-repositories { mavenCentral() }
+java {
+    toolchain {
+        languageVersion.set(JavaLanguageVersion.of(21))
+    }
+}
+
+kotlin {
+    jvmToolchain(21)
+}
+
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_21)
+    }
+}
 
 dependencies {
     implementation("io.ktor:ktor-server-netty:2.3.12")
@@ -20,4 +39,8 @@ dependencies {
 
 tasks.withType<Jar> {
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+}
+
+tasks.named<com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar>("shadowJar") {
+    archiveFileName.set("interpill-ai-gateway-all.jar")
 }
