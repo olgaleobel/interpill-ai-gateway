@@ -9,32 +9,37 @@ repositories {
     mavenCentral()
 }
 
+application {
+    mainClass.set("com.interpill.gateway.ApplicationKt")
+}
+
 kotlin {
-    // Компилируем Kotlin под Java 21
-    jvmToolchain(21)
+    // Компилируем Kotlin под Java 17 (LTS)
+    jvmToolchain(17)
 }
 
 java {
-    // Компилируем Java-код под Java 21
+    // И Java-код тоже под Java 17
     toolchain {
-        languageVersion.set(JavaLanguageVersion.of(21))
+        languageVersion.set(JavaLanguageVersion.of(17))
     }
 }
 
+// На всякий случай фиксируем release для javac
 tasks.withType<JavaCompile> {
-    // Гарантируем target 21 даже если локальный JDK новее
-    options.release.set(21)
+    options.release.set(17)
 }
 
+// И явный target для Kotlin-компилятора
 tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
     compilerOptions {
-        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_21)
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
     }
 }
 
-application {
-    // Точка входа
-    mainClass.set("com.interpill.gateway.ApplicationKt")
+// Тень-джар
+tasks.withType<Jar> {
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
 }
 
 dependencies {
@@ -43,21 +48,5 @@ dependencies {
     implementation("io.ktor:ktor-server-content-negotiation:2.3.12")
     implementation("io.ktor:ktor-serialization-kotlinx-json:2.3.12")
     implementation("io.ktor:ktor-server-cors:2.3.12")
-    // (опционально) если нужен напрямую JSON
-    // implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
-}
-
-// Тень-джар с зависимостями
-tasks.named<com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar>("shadowJar") {
-    archiveBaseName.set("interpill-ai-gateway")
-    archiveVersion.set("")           // без версии в имени файла
-    archiveClassifier.set("all")     // ...-all.jar
-    mergeServiceFiles()
-    minimize()
-}
-
-// На всякий: если кто-то вызовет обычный jar — пусть падассемблится тень-джар
-tasks.build {
-    dependsOn(tasks.shadowJar)
 }
 
