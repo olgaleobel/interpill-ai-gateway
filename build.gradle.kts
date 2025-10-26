@@ -48,5 +48,6 @@ dependencies {
     implementation("io.ktor:ktor-server-content-negotiation:2.3.12")
     implementation("io.ktor:ktor-serialization-kotlinx-json:2.3.12")
     implementation("io.ktor:ktor-server-cors:2.3.12")
+    runtimeOnly("org.slf4j:slf4j-simple:2.0.13")
 }
 
