@@ -3,50 +3,46 @@ package com.interpill.gateway
 import io.ktor.server.application.*
 import io.ktor.server.engine.*
 import io.ktor.server.netty.*
-import io.ktor.server.plugins.cors.routing.*
 import io.ktor.server.plugins.contentnegotiation.*
+import io.ktor.server.plugins.cors.routing.*
 import io.ktor.serialization.kotlinx.json.*
-import io.ktor.server.routing.*
 import io.ktor.server.response.*
-import io.ktor.server.request.*
+import io.ktor.server.routing.*
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
 
-fun main() = EngineMain.main(arrayOf())
-
-fun Application.module() {
-    install(CORS) { anyHost() }
-    install(ContentNegotiation) {
-        json(Json { ignoreUnknownKeys = true })
-    }
-
-    routing {
-        get("/health") { call.respondText("OK") }
-
-        post("/v1/check-interactions") {
-            val req = call.receive<CheckReq>()
-            // пока заглушка — вернём low; позже подключим OpenAI/Gemini
-            val resp = CheckResp(
-                riskLevel = "low",
-                perDrug = req.meds.associateWith { "low" }
-            )
-            call.respond(resp)
+fun main() {
+    embeddedServer(Netty, port = 8080, host = "0.0.0.0") {
+        install(ContentNegotiation) { json() }
+        install(CORS) {
+            anyHost()
+            allowMethod(io.ktor.http.HttpMethod.Get)
+            allowMethod(io.ktor.http.HttpMethod.Post)
+            allowHeader(io.ktor.http.HttpHeaders.ContentType)
+            allowHeader(io.ktor.http.HttpHeaders.Authorization)
         }
-    }
+        routing {
+            get("/ping") {
+                call.respond(mapOf("status" to "ok"))
+            }
+
+            // Пример мок-эндпойнта для проверки:
+            get("/ai/summary") {
+                val mock = call.request.queryParameters["mock"] == "1"
+                if (mock) {
+                    call.respond(Summary("low", listOf(), listOf(), listOf(), mapOf("paracetamol" to "low")))
+                } else {
+                    call.respond(mapOf("error" to "not configured"))
+                }
+            }
+        }
+    }.start(wait = true)
 }
 
 @Serializable
-data class CheckReq(
-    val meds: List<String>,
-    val profile: Map<String, String> = emptyMap(),
-    val patientNotes: List<String> = emptyList()
-)
-
-@Serializable
-data class CheckResp(
+data class Summary(
     val riskLevel: String,
-    val highlights: List<String> = emptyList(),
-    val recommendations: List<String> = emptyList(),
-    val caveats: List<String> = emptyList(),
-    val perDrug: Map<String, String> = emptyMap()
+    val highlights: List<String>,
+    val recommendations: List<String>,
+    val caveats: List<String>,
+    val perDrug: Map<String, String>
 )
