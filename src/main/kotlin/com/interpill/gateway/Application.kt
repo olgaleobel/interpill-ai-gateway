@@ -9,30 +9,50 @@ import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import kotlinx.serialization.Serializable
+import io.ktor.http.*
 
 fun main() {
-    embeddedServer(Netty, port = 8080, host = "0.0.0.0") {
+    // Позволяет Render/докеру задавать порт через переменную окружения PORT
+    val port = System.getenv("PORT")?.toIntOrNull() ?: 8080
+
+    embeddedServer(Netty, port = port, host = "0.0.0.0") {
         install(ContentNegotiation) { json() }
         install(CORS) {
             anyHost()
-            allowMethod(io.ktor.http.HttpMethod.Get)
-            allowMethod(io.ktor.http.HttpMethod.Post)
-            allowHeader(io.ktor.http.HttpHeaders.ContentType)
-            allowHeader(io.ktor.http.HttpHeaders.Authorization)
+            allowMethod(HttpMethod.Get)
+            allowMethod(HttpMethod.Post)
+            allowHeader(HttpHeaders.ContentType)
+            allowHeader(HttpHeaders.Authorization)
         }
-        routing {
-            get("/ping") {
-                call.respond(mapOf("status" to "ok"))
-            }
 
-            // Пример мок-эндпойнта для проверки:
+        routing {
+            // Простые health/probe роуты
+            get("/")       { call.respondText("interpill-ai-gateway up") }
+            get("/health") { call.respondText("OK") }
+            get("/ping")   { call.respondText("pong") }
+
+            // Пример мок-эндпоинта для проверки:
+            // GET /ai/summary?mock=1
             get("/ai/summary") {
                 val mock = call.request.queryParameters["mock"] == "1"
                 if (mock) {
-                    call.respond(Summary("low", listOf(), listOf(), listOf(), mapOf("paracetamol" to "low")))
+                    call.respond(
+                        Summary(
+                            riskLevel = "low",
+                            highlights = emptyList(),
+                            recommendations = emptyList(),
+                            caveats = emptyList(),
+                            perDrug = mapOf("paracetamol" to "low")
+                        )
+                    )
                 } else {
-                    call.respond(mapOf("error" to "not configured"))
+                    call.respond(HttpStatusCode.NotImplemented, mapOf("error" to "not configured"))
                 }
+            }
+
+            // Заготовка под реальный POST (пока просто заглушка)
+            post("/ai/summary") {
+                call.respond(HttpStatusCode.NotImplemented, mapOf("error" to "not configured"))
             }
         }
     }.start(wait = true)
