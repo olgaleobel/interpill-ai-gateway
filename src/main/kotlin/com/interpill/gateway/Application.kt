@@ -40,6 +40,12 @@ fun main() {
                 request.headers["Authorization"]?.removePrefix("Bearer ")?.trim()
 
             // GET /ai/summary?mock=1 — для быстрой проверки (требует токен)
+            get("/debug/env") {
+                val a = System.getenv("AI_PROXY_TOKEN")
+                val g = System.getenv("GATEWAY_API_KEY")
+                call.respond(mapOf("AI_PROXY_TOKEN" to a, "GATEWAY_API_KEY" to g))
+            }
+            
             get("/ai/summary") {
                 val expected = allowedToken()
                 if (expected.isNullOrBlank()) {
