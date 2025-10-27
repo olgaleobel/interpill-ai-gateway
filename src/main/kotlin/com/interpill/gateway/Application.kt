@@ -7,7 +7,7 @@ import io.ktor.server.engine.*
 import io.ktor.server.netty.*
 import io.ktor.server.plugins.contentnegotiation.*
 import io.ktor.server.plugins.cors.routing.*
-import io.ktor.server.request.*       // <-- нужно для call.receiveText()
+import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import kotlinx.serialization.Serializable
@@ -39,8 +39,9 @@ fun main() {
             fun ApplicationCall.bearerToken(): String? =
                 request.headers["Authorization"]?.removePrefix("Bearer ")?.trim()
 
+            // ---------------- AI summary (mockable) ----------------
+
             // GET /ai/summary?mock=1 — для быстрой проверки (требует токен)
-                      
             get("/ai/summary") {
                 val expected = allowedToken()
                 if (expected.isNullOrBlank()) {
@@ -98,6 +99,56 @@ fun main() {
 
                 // TODO: реальный вызов Gemini через System.getenv("GEMINI_API_KEY")
                 call.respond(HttpStatusCode.NotImplemented, mapOf("error" to "real mode not wired"))
+            }
+
+            // ---------------- Support form ----------------
+
+            // Простая модель запроса из формы поддержки
+            @Serializable
+            data class SupportRequest(val from: String, val message: String)
+
+            // POST /support/send
+            // Токен обязателен (тот же AI_PROXY_TOKEN/GATEWAY_API_KEY).
+            // Сейчас: мок — просто логируем и возвращаем 202/200.
+            post("/support/send") {
+                val expected = allowedToken()
+                if (expected.isNullOrBlank()) {
+                    call.respond(HttpStatusCode.InternalServerError, mapOf("error" to "token not configured"))
+                    return@post
+                }
+                val bearer = call.bearerToken()
+                if (bearer != expected) {
+                    call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "unauthorised"))
+                    return@post
+                }
+
+                val supportEmail = System.getenv("SUPPORT_EMAIL") ?: "support@example.com"
+
+                val req = try {
+                    call.receive<SupportRequest>()
+                } catch (t: Throwable) {
+                    call.respond(HttpStatusCode.BadRequest, mapOf("error" to "bad json"))
+                    return@post
+                }
+
+                // Логируем для отладки (видно в Render → Logs)
+                println("Support: FROM=${req.from} TO=$supportEmail MSG=${req.message.take(300)}")
+
+                // Если позже подключим реального провайдера (Resend/SES/Mailgun),
+                // здесь будет отправка и возврат 200/ошибка провайдера.
+                val providerKey = System.getenv("RESEND_API_KEY")
+                if (providerKey.isNullOrBlank()) {
+                    call.respond(
+                        HttpStatusCode.Accepted,
+                        mapOf("status" to "ok", "note" to "email provider not configured (mock)")
+                    )
+                } else {
+                    // Пока не отправляем — просто подтверждаем (чтобы не ломать сборку без зависимостей клиента)
+                    call.respond(
+                        HttpStatusCode.OK,
+                        mapOf("status" to "queued", "provider" to "resend")
+                    )
+                }
             }
         }
     }.start(wait = true)
