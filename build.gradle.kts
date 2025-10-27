@@ -14,31 +14,30 @@ application {
     mainClass.set("com.interpill.gateway.ApplicationKt")
 }
 
+// Используем JDK 21, доступный в контейнере gradle:8.7-jdk21-alpine
 kotlin {
-    // Компилируем Kotlin под Java 17 (LTS)
-    jvmToolchain(17)
+    jvmToolchain(21)
 }
 
 java {
-    // И Java-код тоже под Java 17
     toolchain {
-        languageVersion.set(JavaLanguageVersion.of(17))
+        languageVersion.set(JavaLanguageVersion.of(21))
     }
 }
 
-// На всякий случай фиксируем release для javac
+// Фиксируем release для javac под 21
 tasks.withType<JavaCompile> {
-    options.release.set(17)
+    options.release.set(21)
 }
 
-// И явный target для Kotlin-компилятора
+// Явный target для Kotlin-компилятора
 tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
     compilerOptions {
-        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_21)
     }
 }
 
-// Тень-джар
+// Тень-джар (fat JAR)
 tasks.withType<Jar> {
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
 }
@@ -51,4 +50,3 @@ dependencies {
     implementation("io.ktor:ktor-server-cors:2.3.12")
     runtimeOnly("org.slf4j:slf4j-simple:2.0.13")
 }
-
