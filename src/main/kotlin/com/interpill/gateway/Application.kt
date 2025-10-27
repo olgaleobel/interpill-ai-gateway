@@ -12,11 +12,8 @@ import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.encodeToString
-import java.net.URI
-import java.net.http.HttpClient
-import java.net.http.HttpRequest
-import java.net.http.HttpResponse
+import java.net.HttpURLConnection
+import java.net.URL
 
 fun main() {
     val port = System.getenv("PORT")?.toIntOrNull() ?: 8080
@@ -44,7 +41,9 @@ fun main() {
             fun ApplicationCall.bearerToken(): String? =
                 request.headers["Authorization"]?.removePrefix("Bearer ")?.trim()
 
-            // --- Mock AI summary for quick checks ---
+            val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+
+            // -------- AI summary (mock/placeholder) --------
             get("/ai/summary") {
                 val expected = allowedToken()
                 if (expected.isNullOrBlank()) {
@@ -55,6 +54,7 @@ fun main() {
                     call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "unauthorised"))
                     return@get
                 }
+
                 val mock = call.request.queryParameters["mock"] == "1"
                 if (mock) {
                     call.respond(
@@ -101,9 +101,9 @@ fun main() {
                 call.respond(HttpStatusCode.NotImplemented, mapOf("error" to "real mode not wired"))
             }
 
-            // ================== SUPPORT: real email sending via Resend ==================
+            // -------- Support: send email via Resend --------
             post("/support/send") {
-                // 1) Auth
+                // 1) auth by bearer
                 val expected = allowedToken()
                 if (expected.isNullOrBlank()) {
                     call.respond(HttpStatusCode.InternalServerError, mapOf("error" to "not configured"))
@@ -114,67 +114,67 @@ fun main() {
                     return@post
                 }
 
-                // 2) Parse input
-                val req = runCatching { call.receive<SupportRequest>() }.getOrElse {
+                // 2) read input
+                val bodyText = call.receiveText()
+                val inDto = try {
+                    json.decodeFromString(SupportIn.serializer(), bodyText)
+                } catch (_: Throwable) {
                     call.respond(HttpStatusCode.BadRequest, mapOf("error" to "bad json"))
                     return@post
                 }
-                val fromEmail = req.from?.trim().orEmpty()
-                val message = req.message?.trim().orEmpty()
-                if (fromEmail.isEmpty() || message.isEmpty()) {
-                    call.respond(HttpStatusCode.BadRequest, mapOf("error" to "fields 'from' and 'message' are required"))
+
+                if (inDto.from.isBlank() || inDto.message.isBlank()) {
+                    call.respond(HttpStatusCode.BadRequest, mapOf("error" to "from and message are required"))
                     return@post
                 }
 
-                // 3) Env & fallbacks
+                // 3) env for Resend
                 val resendKey = System.getenv("RESEND_API_KEY").orEmpty()
-                val supportTo = System.getenv("SUPPORT_EMAIL").orEmpty()
-                val supportFrom = System.getenv("SUPPORT_FROM").orEmpty().ifBlank { "onboarding@resend.dev" }
-                if (resendKey.isBlank() || supportTo.isBlank()) {
-                    // No provider configured => keep mock behaviour, but with 200 to not confuse UI
-                    call.respond(HttpStatusCode.OK, mapOf("status" to "ok", "note" to "email provider not configured (mock)"))
+                val supportEmail = System.getenv("SUPPORT_EMAIL").orEmpty()
+                    .ifBlank { "olga.l.belyaeva@gmail.com" }
+
+                if (resendKey.isBlank()) {
+                    // нет ключа → работаем как мок, но сообщаем явно
+                    call.respond(
+                        HttpStatusCode.Accepted,
+                        mapOf("status" to "ok", "note" to "email provider not configured (mock)")
+                    )
                     return@post
                 }
 
-                // 4) Build payload for Resend
-                val subject = "Support Interpill"
-                val textBody = buildString {
-                    appendLine("From: $fromEmail")
-                    appendLine()
-                    appendLine(message)
-                }
+                // 4) build payload for Resend
                 val payload = ResendEmail(
-                    from = supportFrom,
-                    to = listOf(supportTo),
-                    subject = subject,
-                    text = textBody
+                    from = "onboarding@resend.dev",      // быстрый старт без домена
+                    to = listOf(supportEmail),
+                    subject = "Support Interpill",
+                    text = buildString {
+                        append("From: ${inDto.from}\n\n")
+                        append(inDto.message)
+                    },
+                    reply_to = inDto.from
                 )
-                val json = Json { ignoreUnknownKeys = true }
-                val body = json.encodeToString(payload)
+                val payloadJson = json.encodeToString(ResendEmail.serializer(), payload)
 
                 // 5) POST to Resend
-                val http = HttpClient.newHttpClient()
-                val request = HttpRequest.newBuilder()
-                    .uri(URI.create("https://api.resend.com/emails"))
-                    .header("Authorization", "Bearer $resendKey")
-                    .header("Content-Type", "application/json")
-                    .POST(HttpRequest.BodyPublishers.ofString(body))
-                    .build()
+                val ok = try {
+                    val url = URL("https://api.resend.com/emails")
+                    val conn = (url.openConnection() as HttpURLConnection).apply {
+                        requestMethod = "POST"
+                        setRequestProperty("Authorization", "Bearer $resendKey")
+                        setRequestProperty("Content-Type", "application/json")
+                        doOutput = true
+                    }
+                    conn.outputStream.use { it.write(payloadJson.toByteArray(Charsets.UTF_8)) }
+                    val code = conn.responseCode
+                    code in 200..299
+                } catch (_: Throwable) { false }
 
-                val resp = runCatching { http.send(request, HttpResponse.BodyHandlers.ofString()) }.getOrElse { e ->
-                    call.respond(HttpStatusCode.BadGateway, mapOf("error" to "provider unreachable", "detail" to e.message))
-                    return@post
-                }
-
-                when (resp.statusCode()) {
-                    200, 201, 202 -> call.respond(HttpStatusCode.Accepted, mapOf("status" to "queued"))
-                    400 -> call.respond(HttpStatusCode.BadRequest, mapOf("error" to "provider rejected request"))
-                    401, 403 -> call.respond(HttpStatusCode.BadGateway, mapOf("error" to "invalid provider key"))
-                    else -> call.respond(HttpStatusCode.BadGateway, mapOf("error" to "provider error", "code" to resp.statusCode()))
+                if (ok) {
+                    call.respond(HttpStatusCode.Accepted, SupportOut(status = "queued"))
+                } else {
+                    call.respond(HttpStatusCode.BadGateway, mapOf("error" to "resend_failed"))
                 }
             }
-            // ==========================================================================
-
         }
     }.start(wait = true)
 }
@@ -189,15 +189,19 @@ data class Summary(
 )
 
 @Serializable
-data class SupportRequest(
-    val from: String? = null,
-    val message: String? = null
+data class SupportIn(
+    val from: String,
+    val message: String
 )
+
+@Serializable
+data class SupportOut(val status: String)
 
 @Serializable
 private data class ResendEmail(
     val from: String,
     val to: List<String>,
     val subject: String,
-    val text: String
+    val text: String,
+    val reply_to: String? = null
 )
