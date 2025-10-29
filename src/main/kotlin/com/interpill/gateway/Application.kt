@@ -143,17 +143,22 @@ fun main() {
                 }
 
                 // 4) build payload for Resend
+                val cleanFrom = inDto.from.trim()
+                val safeReplyTo = if (cleanFrom.contains("@")) cleanFrom else "onboarding@resend.dev"
+
                 val payload = ResendEmail(
                     from = "onboarding@resend.dev",      // быстрый старт без домена
                     to = listOf(supportEmail),
                     subject = "Support Interpill",
                     text = buildString {
-                        append("From: ${inDto.from}\n\n")
-                        append(inDto.message)
+                        append("From: $cleanFrom\n\n")
+                        append(inDto.message.trim())
                     },
-                    reply_to = inDto.from
+                    reply_to = safeReplyTo
                 )
+
                 val payloadJson = json.encodeToString(ResendEmail.serializer(), payload)
+
 
                 // 5) POST to Resend
                 val ok = try {
