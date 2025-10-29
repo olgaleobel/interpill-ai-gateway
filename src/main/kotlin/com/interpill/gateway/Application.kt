@@ -142,22 +142,35 @@ fun main() {
                     return@post
                 }
 
-                // 4) build payload for Resend
+                /// 4) build payload for Resend
                 val cleanFrom = inDto.from.trim()
-                val safeReplyTo = if (cleanFrom.contains("@")) cleanFrom else "onboarding@resend.dev"
-
+                
+                // простая проверка формата e-mail
+                val emailRegex = "^[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+$".toRegex()
+                val isValidEmail = emailRegex.matches(cleanFrom)
+                
+                // если адрес некорректный — возвращаем 400 с понятным сообщением
+                if (!isValidEmail) {
+                    call.respond(
+                        HttpStatusCode.BadRequest,
+                        mapOf("error" to "invalid email format")
+                    )
+                    return@post
+                }
+                
                 val payload = ResendEmail(
-                    from = "onboarding@resend.dev",      // быстрый старт без домена
+                    from = "onboarding@resend.dev",
                     to = listOf(supportEmail),
                     subject = "Support Interpill",
                     text = buildString {
                         append("From: $cleanFrom\n\n")
                         append(inDto.message.trim())
                     },
-                    reply_to = safeReplyTo
+                    reply_to = cleanFrom
                 )
-
+                
                 val payloadJson = json.encodeToString(ResendEmail.serializer(), payload)
+
 
 
                 // 5) POST to Resend
