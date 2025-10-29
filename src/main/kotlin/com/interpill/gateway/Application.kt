@@ -11,12 +11,10 @@ import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.*
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
 import java.net.HttpURLConnection
 import java.net.URL
-import java.nio.charset.StandardCharsets
-import kotlin.time.Duration
-import kotlin.time.Duration.Companion.seconds
 
 fun main() {
     val port = System.getenv("PORT")?.toIntOrNull() ?: 8080
@@ -50,7 +48,7 @@ fun main() {
                 prettyPrint = false
             }
 
-            // -------- AI summary (mock + real) --------
+            // -------- AI summary (mock GET) --------
             get("/ai/summary") {
                 val expected = allowedToken()
                 if (expected.isNullOrBlank()) {
@@ -78,6 +76,7 @@ fun main() {
                 }
             }
 
+            // -------- AI summary (real POST entrypoint, с graceful errors) --------
             post("/ai/summary") {
                 val expected = allowedToken()
                 if (expected.isNullOrBlank()) {
@@ -90,7 +89,10 @@ fun main() {
                 }
 
                 val mock = call.request.queryParameters["mock"] == "1"
-                val bodyText = call.receiveText().trim()
+                val raw = runCatching { call.receiveText() }.getOrElse {
+                    call.respond(HttpStatusCode.BadRequest, mapOf("error" to "empty body"))
+                    return@post
+                }
 
                 if (mock) {
                     call.respond(
@@ -105,103 +107,61 @@ fun main() {
                     return@post
                 }
 
-                // ----- Extract prompt from JSON or raw text -----
-                val prompt: String = runCatching {
-                    if (bodyText.startsWith("{")) {
-                        val obj = json.parseToJsonElement(bodyText).jsonObject
-                        (obj["prompt"] ?: obj["text"] ?: obj["message"])?.jsonPrimitive?.content
-                            ?: error("missing 'prompt'")
-                    } else {
-                        bodyText
+                // Здесь у вас может быть реальный вызов Gemini/Vertex AI
+                // Ниже — заглушка, показывающая, как маппить 429 → 503 с дружелюбным текстом.
+                // Замените блок try { … } на ваш настоящий HTTP-клиент к Gemini.
+                val upstreamResult: Result<Summary> = runCatching {
+                    // TODO: call Gemini here and parse JSON → Summary
+                    // временно вернём 503-like поведение по ключевому слову "simulate429"
+                    if (raw.contains("simulate429", ignoreCase = true)) {
+                        error("UPSTREAM_429")
                     }
-                }.getOrElse {
-                    call.respond(HttpStatusCode.BadRequest, mapOf("error" to "bad json or missing prompt"))
-                    return@post
-                }
-
-                // ----- Call Gemini -----
-                val apiKey = System.getenv("GEMINI_API_KEY").orEmpty()
-                val model = System.getenv("GEMINI_MODEL").orEmpty().ifBlank { "gemini-1.5-flash" }
-                if (apiKey.isBlank()) {
-                    call.respond(HttpStatusCode.InternalServerError, mapOf("error" to "ai not configured"))
-                    return@post
-                }
-
-                val url =
-                    "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=$apiKey"
-
-                val requestPayload = buildJsonObject {
-                    put("contents", buildJsonArray {
-                        add(buildJsonObject {
-                            put("parts", buildJsonArray {
-                                add(buildJsonObject { put("text", prompt) })
-                            })
-                        })
-                    })
-                    put("generationConfig", buildJsonObject {
-                        put("temperature", 0.0)
-                    })
-                }.toString()
-
-                val (code, resp) = safeHttpPostJson(url, requestPayload, timeout = 20.seconds)
-
-                // Map common Gemini errors to user-friendly responses
-                if (code == 401 || code == 403) {
-                    call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "unauthorised"))
-                    return@post
-                }
-                if (code == 429) {
-                    call.respond(
-                        HttpStatusCode.ServiceUnavailable,
-                        mapOf(
-                            "error" to "AI service temporarily busy",
-                            "note" to "The AI system is overloaded (rate limited). Please try again in a moment."
-                        )
+                    // демо-ответ
+                    Summary(
+                        riskLevel = "low",
+                        highlights = listOf("No clinically meaningful interactions detected."),
+                        recommendations = listOf("Use as directed."),
+                        caveats = emptyList(),
+                        perDrug = mapOf("paracetamol" to "low")
                     )
-                    return@post
-                }
-                if (code in 500..599) {
-                    call.respond(
-                        HttpStatusCode.ServiceUnavailable,
-                        mapOf("error" to "AI upstream unavailable")
-                    )
-                    return@post
-                }
-                if (code !in 200..299) {
-                    // Try to surface short message if present
-                    val short = extractErrorMessage(resp)
-                    call.respond(HttpStatusCode.BadGateway, mapOf("error" to (short ?: "ai_failed")))
-                    return@post
                 }
 
-                // ----- Parse Gemini response → text -----
-                val modelText = runCatching {
-                    val root = json.parseToJsonElement(resp).jsonObject
-                    val candidates = root["candidates"]?.jsonArray ?: error("no candidates")
-                    val first = candidates.first().jsonObject
-                    val parts = first["content"]?.jsonObject?.get("parts")?.jsonArray ?: error("no parts")
-                    parts.first().jsonObject["text"]?.jsonPrimitive?.content ?: error("no text")
-                }.getOrElse {
-                    call.respond(HttpStatusCode.BadGateway, mapOf("error" to "invalid_ai_response"))
-                    return@post
-                }
-
-                // ----- Extract JSON block from model text -----
-                val jsonBlock = extractJsonBlock(modelText)?.trim() ?: modelText.trim()
-
-                // ----- Validate to Summary -----
-                val summary = runCatching { json.decodeFromString(Summary.serializer(), jsonBlock) }
-                    .getOrElse {
-                        call.respond(HttpStatusCode.BadGateway, mapOf("error" to "invalid_ai_json"))
-                        return@post
+                upstreamResult.onSuccess { summary ->
+                    call.respond(summary)
+                }.onFailure { t ->
+                    val msg = t.message.orEmpty()
+                    when {
+                        msg.contains("UPSTREAM_429") ||
+                        msg.contains("RESOURCE_EXHAUSTED", true) -> {
+                            call.respond(
+                                HttpStatusCode.ServiceUnavailable,
+                                mapOf(
+                                    "error" to "AI service temporarily busy",
+                                    "note" to "The AI system is currently overloaded. Please try again later."
+                                )
+                            )
+                        }
+                        msg.contains("timeout", true) -> {
+                            call.respond(
+                                HttpStatusCode.GatewayTimeout,
+                                mapOf("error" to "AI request timeout", "note" to "Please retry in a moment.")
+                            )
+                        }
+                        msg.contains("UNAUTH", true) || msg.contains("401") -> {
+                            call.respond(HttpStatusCode.BadGateway, mapOf("error" to "upstream unauthorised"))
+                        }
+                        else -> {
+                            call.respond(
+                                HttpStatusCode.BadGateway,
+                                mapOf("error" to "upstream failure", "details" to (msg.take(200)))
+                            )
+                        }
                     }
-
-                call.respond(summary)
+                }
             }
 
             // -------- Support: send email via Resend --------
             post("/support/send") {
-                // 1) auth by bearer
                 val expected = allowedToken()
                 if (expected.isNullOrBlank()) {
                     call.respond(HttpStatusCode.InternalServerError, mapOf("error" to "not configured"))
@@ -212,7 +172,6 @@ fun main() {
                     return@post
                 }
 
-                // 2) read input
                 val bodyText = call.receiveText()
                 val inDto = try {
                     json.decodeFromString(SupportIn.serializer(), bodyText)
@@ -226,13 +185,11 @@ fun main() {
                     return@post
                 }
 
-                // 3) env for Resend
                 val resendKey = System.getenv("RESEND_API_KEY").orEmpty()
                 val supportEmail = System.getenv("SUPPORT_EMAIL").orEmpty()
                     .ifBlank { "olga.l.belyaeva@gmail.com" }
 
                 if (resendKey.isBlank()) {
-                    // нет ключа → работаем как мок, но сообщаем явно
                     call.respond(
                         HttpStatusCode.Accepted,
                         mapOf("status" to "ok", "note" to "email provider not configured (mock)")
@@ -240,10 +197,7 @@ fun main() {
                     return@post
                 }
 
-                // 4) build payload for Resend
                 val cleanFrom = inDto.from.trim()
-
-                // простая проверка формата e-mail
                 val emailRegex = "^[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+$".toRegex()
                 if (!emailRegex.matches(cleanFrom)) {
                     call.respond(HttpStatusCode.BadRequest, mapOf("error" to "invalid email format"))
@@ -251,7 +205,7 @@ fun main() {
                 }
 
                 val payload = ResendEmail(
-                    from = "onboarding@resend.dev", // быстрый старт без домена
+                    from = "onboarding@resend.dev",
                     to = listOf(supportEmail),
                     subject = "Support Interpill",
                     text = buildString {
@@ -260,10 +214,8 @@ fun main() {
                     },
                     reply_to = cleanFrom
                 )
-
                 val payloadJson = json.encodeToString(ResendEmail.serializer(), payload)
 
-                // 5) POST to Resend
                 val ok = try {
                     val url = URL("https://api.resend.com/emails")
                     val conn = (url.openConnection() as HttpURLConnection).apply {
@@ -271,8 +223,6 @@ fun main() {
                         setRequestProperty("Authorization", "Bearer $resendKey")
                         setRequestProperty("Content-Type", "application/json")
                         doOutput = true
-                        connectTimeout = 10_000
-                        readTimeout = 15_000
                     }
                     conn.outputStream.use { it.write(payloadJson.toByteArray(Charsets.UTF_8)) }
                     val code = conn.responseCode
@@ -299,6 +249,13 @@ data class Summary(
 )
 
 @Serializable
+data class SummaryIn(
+    val meds: List<String>,
+    val profile: JsonElement? = null,
+    val patientNotes: List<String> = emptyList()
+)
+
+@Serializable
 data class SupportIn(
     val from: String,
     val message: String
@@ -315,60 +272,3 @@ private data class ResendEmail(
     val text: String,
     val reply_to: String? = null
 )
-
-/* ----------------- helpers ----------------- */
-
-private fun safeHttpPostJson(
-    url: String,
-    body: String,
-    headers: Map<String, String> = emptyMap(),
-    timeout: Duration = 20.seconds
-): Pair<Int, String> {
-    return try {
-        val conn = (URL(url).openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"
-            setRequestProperty("Content-Type", "application/json; charset=utf-8")
-            headers.forEach { (k, v) -> setRequestProperty(k, v) }
-            doOutput = true
-            connectTimeout = timeout.inWholeMilliseconds.toInt()
-            readTimeout = (timeout.inWholeMilliseconds * 2).toInt()
-        }
-        conn.outputStream.use { os ->
-            os.write(body.toByteArray(StandardCharsets.UTF_8))
-        }
-        val code = conn.responseCode
-        val stream = if (code in 200..299) conn.inputStream else conn.errorStream
-        val resp = (stream ?: conn.inputStream)?.use { it.readBytes().toString(Charsets.UTF_8) }.orEmpty()
-        code to resp
-    } catch (t: Throwable) {
-        // Сведём сетевую ошибку к 503, чтобы UI показал дружелюбный текст
-        503 to """{"error":{"message":"network failure: ${t.message}"}}"""
-    }
-}
-
-private fun extractJsonBlock(text: String): String? {
-    // вытащить содержимое из ```json ... ``` либо из первых {…}
-    val fenced = Regex("```json\\s*([\\s\\S]*?)\\s*```", RegexOption.IGNORE_CASE)
-        .find(text)?.groupValues?.getOrNull(1)
-    if (!fenced.isNullOrBlank()) return fenced
-    val start = text.indexOf('{')
-    val end = text.lastIndexOf('}')
-    return if (start >= 0 && end > start) text.substring(start, end + 1) else null
-}
-
-private fun extractErrorMessage(body: String): String? {
-    return try {
-        val root = Json.parseToJsonElement(body).jsonObject
-        when {
-            root["error"] is JsonObject -> {
-                val err = root["error"]!!.jsonObject
-                err["message"]?.jsonPrimitive?.content
-                    ?: err["status"]?.jsonPrimitive?.content
-                    ?: "ai_error"
-            }
-            root["message"] is JsonPrimitive -> root["message"]!!.jsonPrimitive.content
-            else -> null
-        }
-    } catch (_: Throwable) { null }
-}
-````
